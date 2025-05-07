@@ -1,0 +1,187 @@
+// Copyright (c) 2024-2025 Accenture, All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//         http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Shared pipeline for Cuttlefish Virtual Device operations
+def call(Map config = [:]) {
+    def kubernetesPodTemplate = """
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        annotations:
+          cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+      spec:
+        serviceAccountName: ${JENKINS_SERVICE_ACCOUNT}
+        containers:
+        - name: builder
+          image: ${CLOUD_REGION}-docker.pkg.dev/${CLOUD_PROJECT}/${ANDROID_BUILD_DOCKER_ARTIFACT_PATH_NAME}:latest
+          imagePullPolicy: Always
+          command:
+          - sleep
+          args:
+          - 4h
+    """.stripIndent()
+
+    pipeline {
+        agent none
+
+        stages {
+            stage ('Start VM Instance') {
+                agent { label params.JENKINS_GCE_CLOUD_LABEL }
+
+                stages {
+                    stage ('Launch Virtual Devices') {
+                        when { expression { env.CUTTLEFISH_DOWNLOAD_URL } }
+                        steps {
+                            script {
+                                currentBuild.description = "$BUILD_USER"
+                            }
+                            catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                                script { env.VM_NODE_NAME = env.NODE_NAME }
+                                sh '''
+                                    CUTTLEFISH_DOWNLOAD_URL="${CUTTLEFISH_DOWNLOAD_URL}" \
+                                    CUTTLEFISH_INSTALL_WIFI="${CUTTLEFISH_INSTALL_WIFI}" \
+                                    CUTTLEFISH_MAX_BOOT_TIME="${CUTTLEFISH_MAX_BOOT_TIME}" \
+                                    NUM_INSTANCES="${NUM_INSTANCES}" \
+                                    VM_CPUS="${VM_CPUS}" \
+                                    VM_MEMORY_MB="${VM_MEMORY_MB}" \
+                                    ./workloads/android/pipelines/tests/cvd_launcher/cvd_start_stop.sh --start
+                                '''
+                            }
+                            archiveArtifacts artifacts: 'wifi*.log', followSymlinks: false, onlyIfSuccessful: false, allowEmptyArchive: true
+                        }
+                    }
+
+                    stage ('MTK Connect to Virtual Devices') {
+                        when {
+                            allOf {
+                                expression { env.MTK_CONNECT_ENABLE == 'true' }
+                                expression { env.CUTTLEFISH_DOWNLOAD_URL }
+                                expression { currentBuild.currentResult == 'SUCCESS' }
+                            }
+                        }
+                        steps {
+                            catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                                withCredentials([usernamePassword(credentialsId: 'jenkins-mtk-connect-apikey', passwordVariable: 'MTK_CONNECT_PASSWORD', usernameVariable: 'MTK_CONNECT_USERNAME')]) {
+                                    sh '''
+                                        sudo \
+                                        MTK_CONNECT_DOMAIN=${HORIZON_DOMAIN} \
+                                        MTK_CONNECT_USERNAME=${MTK_CONNECT_USERNAME} \
+                                        MTK_CONNECT_PASSWORD=${MTK_CONNECT_PASSWORD} \
+                                        MTK_CONNECTED_DEVICES="${NUM_INSTANCES}" \
+                                        MTK_CONNECT_TEST_ARTIFACT="${CUTTLEFISH_DOWNLOAD_URL}" \
+                                        MTK_CONNECT_TESTBENCH="${JOB_NAME}-${BUILD_NUMBER}" \
+                                        timeout 15m ./workloads/android/pipelines/tests/cvd_launcher/cvd_mtk_connect.sh --start
+                                    '''
+                                }
+                            }
+                        }
+                    }
+
+                    // Custom stages can be injected here
+                    if (config.customStages) {
+                        config.customStages.each { stage ->
+                            stage(stage.name) {
+                                steps {
+                                    script {
+                                        stage.steps()
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    stage ('Keep Devices Alive') {
+                        when {
+                            allOf {
+                                expression { env.CUTTLEFISH_DOWNLOAD_URL }
+                                expression { env.MTK_CONNECT_ENABLE == 'true' }
+                            }
+                        }
+                        steps {
+                            catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                                script {
+                                    sleep(time: "${CUTTLEFISH_KEEP_ALIVE_TIME}", unit: 'MINUTES')
+                                }
+                            }
+                        }
+                    }
+
+                    stage ('Stop Virtual Devices') {
+                        when { expression { env.CUTTLEFISH_DOWNLOAD_URL } }
+                        steps {
+                            catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                                withCredentials([usernamePassword(credentialsId: 'jenkins-mtk-connect-apikey', passwordVariable: 'MTK_CONNECT_PASSWORD', usernameVariable: 'MTK_CONNECT_USERNAME')]) {
+                                    script {
+                                        sh 'echo "Stopping  MTK Connect"'
+                                        sh '''
+                                            if [ $MTK_CONNECT_ENABLE = true ]; then
+                                                sudo \
+                                                MTK_CONNECT_DOMAIN=${HORIZON_DOMAIN} \
+                                                MTK_CONNECT_USERNAME=${MTK_CONNECT_USERNAME} \
+                                                MTK_CONNECT_PASSWORD=${MTK_CONNECT_PASSWORD} \
+                                                MTK_CONNECTED_DEVICES="${NUM_INSTANCES}" \
+                                                MTK_CONNECT_TESTBENCH="${JOB_NAME}-${BUILD_NUMBER}" \
+                                                timeout 10m ./workloads/android/pipelines/tests/cvd_launcher/cvd_mtk_connect.sh --stop || true
+                                            fi
+                                        '''
+                                        sh 'echo "Stopping Cuttlefish"'
+                                        sh './workloads/android/pipelines/tests/cvd_launcher/cvd_start_stop.sh --stop || true'
+                                    }
+                                    archiveArtifacts artifacts: 'cvd*.log', followSymlinks: false, onlyIfSuccessful: false, allowEmptyArchive: true
+                                    archiveArtifacts artifacts: 'cuttlefish*.tgz', followSymlinks: false, onlyIfSuccessful: false, allowEmptyArchive: true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            stage ('Cleanup') {
+                agent { kubernetes { yaml kubernetesPodTemplate } }
+                stages {
+                    stage ('Remove VM Instance') {
+                        when { expression { currentBuild.currentResult != 'SUCCESS' } }
+                        steps {
+                            container(name: 'builder') {
+                                sh '''
+                                    echo "Removing " ${VM_NODE_NAME} " on error!" || true
+                                    yes Y | gcloud compute instances delete ${VM_NODE_NAME} --zone ${CLOUD_ZONE} || true
+                                '''
+                            }
+                        }
+                    }
+
+                    stage ('Delete Offline Testbenches') {
+                        when { expression { currentBuild.currentResult != 'SUCCESS' } }
+                        steps {
+                            container(name: 'builder') {
+                                withCredentials([usernamePassword(credentialsId: 'jenkins-mtk-connect-apikey', passwordVariable: 'MTK_CONNECT_PASSWORD', usernameVariable: 'MTK_CONNECT_USERNAME')]) {
+                                    sh '''
+                                        sudo \
+                                        MTK_CONNECT_DOMAIN=${HORIZON_DOMAIN} \
+                                        MTK_CONNECT_USERNAME=${MTK_CONNECT_USERNAME} \
+                                        MTK_CONNECT_PASSWORD=${MTK_CONNECT_PASSWORD} \
+                                        MTK_CONNECT_TESTBENCH="${JOB_NAME}-${BUILD_NUMBER}" \
+                                        MTK_CONNECT_DELETE_OFFLINE_TESTBENCHES=true \
+                                        timeout 10m ./workloads/android/pipelines/tests/cvd_launcher/cvd_mtk_connect.sh --delete || true
+                                    '''
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+} 
