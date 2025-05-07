@@ -89,12 +89,13 @@ def call(Map config = [:]) {
                     }
 
                     // Custom stages can be injected here
-                    if (config.customStages) {
-                        config.customStages.each { stage ->
-                            stage(stage.name) {
-                                steps {
-                                    script {
-                                        stage.steps()
+                    stage('Custom Stages') {
+                        when { expression { config.customStages != null } }
+                        steps {
+                            script {
+                                config.customStages.each { customStage ->
+                                    stage(customStage.name) {
+                                        customStage.steps()
                                     }
                                 }
                             }
