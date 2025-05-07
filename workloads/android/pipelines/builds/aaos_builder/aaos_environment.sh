@@ -37,6 +37,9 @@
 #  - POST_REPO_INITIALISE_COMMAND: additional vendor commands for repo initialisation.
 #  - POST_REPO_SYNC_COMMAND: additional vendor commands initialisation post
 #        repo sync.
+#  - LOCAL_MANIFEST_CONTENT: XML content of the local manifest to be used
+#        during repo initialization. The content will be written to
+#        .repo/local_manifests/local_manifest.xml
 #
 # For Gerrit review change sets:
 #  - GERRIT_SERVER_URL: URL of Gerrit server.
@@ -75,6 +78,10 @@ AAOS_DEFAULT_REVISION=${AAOS_DEFAULT_REVISION:-android-14.0.0_r30}
 # Android branch/tag:
 AAOS_REVISION=${AAOS_REVISION:-${AAOS_DEFAULT_REVISION}}
 AAOS_REVISION=$(echo "${AAOS_REVISION}" | xargs)
+
+# Local manifest content
+LOCAL_MANIFEST_CONTENT=$(echo "${LOCAL_MANIFEST_CONTENT}" | xargs)
+LOCAL_MANIFEST_CONTENT=${LOCAL_MANIFEST_CONTENT:-''}
 
 # RPi Revision (Vanilla RPi)
 AAOS_RPI_REVISION="android-15.0"

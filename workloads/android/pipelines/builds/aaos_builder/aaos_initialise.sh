@@ -64,6 +64,15 @@
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")"/aaos_environment.sh "$0"
 
+# Create local_manifests directory if it doesn't exist
+mkdir -p .repo/local_manifests
+
+# Write local manifest content if provided
+if [[ -n "${LOCAL_MANIFEST_CONTENT}" ]]; then
+    echo "Writing local manifest content to .repo/local_manifests/local_manifest.xml"
+    echo "${LOCAL_MANIFEST_CONTENT}" > .repo/local_manifests/local_manifest.xml
+fi
+
 # Retry 4 times, on 3rd fail, clean workspace and retry once more.
 MAX_RETRIES=4
 for ((i=1; i<="${MAX_RETRIES}"; i++)); do

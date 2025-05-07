@@ -138,6 +138,7 @@ pipeline {
                   export ANDROID_VERSION="${ANDROID_VERSION}"
                   export AAOS_CLEAN="NO_CLEAN"
                   export GERRIT_SERVER_URL="${GERRIT_API_URL}"
+                  export LOCAL_MANIFEST_CONTENT="${LOCAL_MANIFEST_CONTENT}"
                   ./workloads/android/pipelines/builds/aaos_builder/aaos_initialise.sh
                   ./workloads/android/pipelines/builds/aaos_builder/aaos_build.sh
                   ./workloads/android/pipelines/builds/aaos_builder/aaos_avd_sdk.sh || true
